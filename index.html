@@ -5,12 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Пробный слой — точки и фигуры депо</title>
   <script src="https://api-maps.yandex.ru/2.1/?apikey=28e257e1-ade9-435c-9e0d-bd5e5aaa3c33&lang=ru_RU" type="text/javascript"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui, sans-serif; }
     .layout { display: flex; height: 100vh; }
     .map-wrap { flex: 1; min-width: 0; position: relative; }
     #map { width: 100%; height: 100%; }
+    .panel-toggle {
+      width: 24px;
+      min-width: 24px;
+      padding: 8px 0;
+      font-size: 12px;
+      cursor: pointer;
+      background: #e0e0e0;
+      border: 1px solid #ccc;
+      border-left: none;
+      flex-shrink: 0;
+    }
+    .panel-toggle:hover { background: #d0d0d0; }
+    .layout.panel-hidden .panel-toggle { border-left: 1px solid #ccc; }
     .panel {
       width: 260px;
       padding: 16px;
@@ -20,6 +36,14 @@
       flex-direction: column;
       gap: 12px;
       overflow-y: auto;
+      transition: width 0.2s, min-width 0.2s, overflow 0.2s;
+    }
+    .layout.panel-hidden .panel {
+      width: 0;
+      min-width: 0;
+      padding: 0;
+      overflow: hidden;
+      border-left: none;
     }
     .panel h2 { margin: 0 0 8px; font-size: 1rem; }
     .panel p { margin: 0; font-size: 13px; color: #555; }
@@ -62,6 +86,10 @@
       pointer-events: none;
       z-index: 100;
     }
+    #map {
+      position: relative;
+      z-index: 1;
+    }
     .train-overlay {
       position: absolute;
       transform-origin: center center;
@@ -70,6 +98,8 @@
     .train-overlay img {
       display: block; width: 100%; height: 100%; object-fit: contain;
     }
+    .last-screenshot-box { min-height: 80px; }
+    /* При открытии баллуна поднимаем слой карты поверх поезда через JS (balloon open/close) */
   </style>
 </head>
 <body>
@@ -78,7 +108,8 @@
       <div id="map"></div>
       <div id="train-overlay-container"></div>
     </div>
-    <div class="panel">
+    <button type="button" id="btn-toggle-panel" class="panel-toggle" title="Свернуть/развернуть панель">◀</button>
+    <div class="panel" id="side-panel">
       <h2>Координаты</h2>
       <div class="coords-box">
         <p class="coords-cursor" id="cursor-coords">Наведите курсор на карту</p>
@@ -122,6 +153,41 @@
         <button type="button" id="btn-remove-shape" class="danger">Удалить последнюю фигуру</button>
       </div>
 
+      <h2>Рельсы (пути в депо)</h2>
+      <div class="coords-box">
+        <label>Начало линии:</label>
+        <div class="form-row">
+          <label>широта</label>
+          <input type="text" id="track-lat1" placeholder="55.6598" />
+        </div>
+        <div class="form-row">
+          <label>долгота</label>
+          <input type="text" id="track-lon1" placeholder="37.711" />
+        </div>
+        <label>Конец линии:</label>
+        <div class="form-row">
+          <label>широта</label>
+          <input type="text" id="track-lat2" placeholder="55.6592" />
+        </div>
+        <div class="form-row">
+          <label>долгота</label>
+          <input type="text" id="track-lon2" placeholder="37.716" />
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="button" id="btn-add-track">Добавить путь</button>
+        <button type="button" id="btn-copy-tracks">Скопировать данные путей</button>
+        <button type="button" id="btn-remove-last-track" class="danger">Удалить последний путь</button>
+      </div>
+      <p style="font-size: 11px; color: #666; margin: 0;">Клик по карте подставляет координаты: первый клик — начало, второй — конец. Или введите вручную (широта, потом долгота; дробная часть через точку или запятую).</p>
+
+      <h2>Последний скриншот (распознавание)</h2>
+      <div class="coords-box last-screenshot-box">
+        <img id="last-recognition-img" src="http://localhost:8766/last.jpg" alt="Последний скриншот" style="max-width:100%; height:auto; border-radius:4px; display:block;" />
+        <p id="last-recognition-error" style="display:none; color:#c00; font-size:12px; margin:8px 0 0 0;">Не загрузилось. Откройте страницу по http:// (не file://) и запустите сервер скриншотов.</p>
+      </div>
+      <p style="font-size: 11px; color: #666; margin: 0;">Сервер: <code>python gpu+out/serve_last_screenshot.py</code> — порт 8766</p>
+
       <p style="font-size: 11px; color: #666; margin: 8px 0 0;">При распознавании (camall_screen_capture.py) поезд появляется на карте при входе и удаляется при выходе из депо (WebSocket порт 8765).</p>
       <div class="log" id="log"></div>
     </div>
@@ -129,9 +195,22 @@
 
   <script>
     (function () {
-      var CENTER = [55.659779, 37.714176];
+      var CENTER = [55.659809, 37.714066];
       var map;
       var depotLayer;
+      /** Продолжение путей внутрь депо. Массив линий: каждая линия — [[lat, lon], [lat, lon]] (начало и конец). */
+      var depotTracksData = [
+        [[55.659237, 37.713259], [55.661203, 37.715995]],
+        [[55.659263, 37.713195], [55.661239, 37.715921]],
+        [[55.659298, 37.713121], [55.661269, 37.715862]]
+      ];
+      var depotTracksLines = [];
+      var depotTracksLayer;
+      /** Пути показываются только при масштабе >= этого значения (при отдалении пропадают). */
+      var tracksMinZoom = 18;
+      /** Точка показывается только при масштабе >= этого значения (зум в два уровня выше путей). */
+      var pointMinZoom = 19;
+      var tracksVisible = true;
       var logEl = document.getElementById('log');
       var cursorCoordsEl = document.getElementById('cursor-coords');
       /** Добавленные поезда: массив { lat, lon, widthM, heightM, angleDeg, flipImage, element, fromRecognition? } */
@@ -144,6 +223,26 @@
       /** Пропорции картинки поезда (ширина x высота) */
       var trainImageWidth = 0;
       var trainImageHeight = 0;
+      /** Firebase: ref для общей карты поездов и для поезда с распознавания (видят все по ссылке) */
+      var firebaseTrainsRef = null;
+      var firebaseRecognitionRef = null;
+      /** URL последнего скриншота — отдаёт простой сервер serve_last_screenshot.py. Для GitHub Pages задаётся через ?screenshot_url=... */
+      var LAST_SCREENSHOT_URL = 'http://localhost:8766/last.jpg';
+      /** URL из Firebase (depot_recognition.screenshotUrl), если есть — используется в баллуне. */
+      var lastRecognitionScreenshotUrl = null;
+
+      (function applyUrlParams() {
+        var params = new URLSearchParams(window.location.search);
+        var screenshotUrl = params.get('screenshot_url');
+        var wsUrl = params.get('ws_url');
+        if (screenshotUrl) {
+          var u = screenshotUrl.replace(/\/$/, '');
+          LAST_SCREENSHOT_URL = /\/last\.jpg$/i.test(u) ? u : u + '/last.jpg';
+        }
+        if (wsUrl) mapWsUrl = wsUrl;
+        var img = document.getElementById('last-recognition-img');
+        if (img) img.src = LAST_SCREENSHOT_URL;
+      })();
 
       /** Размер оси‑алigned прямоугольника в пикселях (картинка «как есть», без поворота геометрии) */
       function getAxisAlignedPixelSize(lat, lon, widthM, heightM) {
@@ -176,6 +275,74 @@
 
       function updateAllTrainOverlays() {
         for (var i = 0; i < trainOverlays.length; i++) updateTrainOverlay(trainOverlays[i]);
+      }
+
+      /** Создать один overlay поезда по данным (без fromRecognition). Возвращает overlay или null если карта/контейнер не готовы. */
+      function createOverlayFromData(data) {
+        if (!trainOverlayContainer || !map) return null;
+        var lat = data.lat, lon = data.lon, widthM = data.widthM || 50, heightM = data.heightM || 2;
+        var angleDeg = data.angleDeg != null ? data.angleDeg : 35;
+        var flipImage = !!data.flipImage;
+        var div = document.createElement('div');
+        div.className = 'train-overlay';
+        var img = document.createElement('img');
+        img.src = 'train.png';
+        img.alt = 'Поезд';
+        div.appendChild(img);
+        trainOverlayContainer.appendChild(div);
+        return {
+          lat: lat, lon: lon, widthM: widthM, heightM: heightM,
+          angleDeg: angleDeg, flipImage: flipImage, element: div
+        };
+      }
+
+      /** Применить снимок поездов из Firebase: перерисовать все «общие» поезда (без учёта recognition). */
+      function applyTrainsSnapshot(snapshot) {
+        if (!trainOverlayContainer || !map) return;
+        var list = snapshot && snapshot.val();
+        if (!Array.isArray(list)) list = [];
+        var nonRecognitionCount = 0;
+        for (var i = 0; i < trainOverlays.length; i++) { if (!trainOverlays[i].fromRecognition) nonRecognitionCount++; }
+        if (list.length === 0 && nonRecognitionCount > 0) return;
+        // Удалить все overlay, кроме от распознавания
+        for (var i = trainOverlays.length - 1; i >= 0; i--) {
+          if (trainOverlays[i].fromRecognition) continue;
+          if (trainOverlays[i].element.parentNode) trainOverlays[i].element.parentNode.removeChild(trainOverlays[i].element);
+          trainOverlays.splice(i, 1);
+        }
+        for (var j = 0; j < list.length; j++) {
+          var ov = createOverlayFromData(list[j]);
+          if (ov) trainOverlays.push(ov);
+        }
+        updateAllTrainOverlays();
+      }
+
+      /** Удалить поезд распознавания только локально (DOM + trainOverlays), без записи в Firebase. */
+      function removeRecognitionOverlayLocal() {
+        if (!recognitionTrainOverlay) return;
+        var idx = trainOverlays.indexOf(recognitionTrainOverlay);
+        if (idx !== -1) trainOverlays.splice(idx, 1);
+        if (recognitionTrainOverlay.element.parentNode) recognitionTrainOverlay.element.parentNode.removeChild(recognitionTrainOverlay.element);
+        recognitionTrainOverlay = null;
+      }
+
+      /** Применить поезд с распознавания из Firebase (depot_recognition) — видят все по ссылке. */
+      function applyRecognitionSnapshot(snapshot) {
+        if (!trainOverlayContainer || !map) return;
+        removeRecognitionOverlayLocal();
+        var data = snapshot && snapshot.val();
+        if (!data || typeof data.lat !== 'number' || typeof data.lon !== 'number') {
+          lastRecognitionScreenshotUrl = null;
+          return;
+        }
+        lastRecognitionScreenshotUrl = data.screenshotUrl || null;
+        var ov = createOverlayFromData(data);
+        if (ov) {
+          ov.fromRecognition = true;
+          trainOverlays.push(ov);
+          recognitionTrainOverlay = ov;
+          updateTrainOverlay(ov);
+        }
       }
 
       /** Строит кольцо углов прямоугольника в геокоординатах [lat, lon] (4 точки без замыкания) */
@@ -212,12 +379,88 @@
           zoom: 15,
           controls: ['zoomControl', 'fullscreenControl']
         });
+        var mapContainerEl = document.getElementById('map');
+        function raiseMapAboveTrain() {
+          mapContainerEl.style.zIndex = '9999';
+        }
+        function lowerMapBack() {
+          mapContainerEl.style.zIndex = '1';
+        }
+        map.balloon.events.add('open', function () {
+          raiseMapAboveTrain();
+          setTimeout(raiseMapAboveTrain, 50);
+        });
+        map.balloon.events.add('close', function () { lowerMapBack(); });
 
         depotLayer = new ymaps.GeoObjectCollection();
+        var pointPlacemark = new ymaps.Placemark([55.659796, 37.714134], {}, { preset: 'islands#circleIcon', iconColor: '#0066cc' });
+        var pointVisible = false;
+        pointPlacemark.events.add('click', function () {
+          var header = 'Депо';
+          var body;
+          if (trainOverlays.length > 0) {
+            body = 'Поезд в депо.';
+            var imgUrl = lastRecognitionScreenshotUrl || LAST_SCREENSHOT_URL;
+            if (imgUrl) {
+              body += '<img src="' + imgUrl + '" style="max-width:280px;max-height:300px;margin-top:8px;display:block;" alt="Скриншот" />';
+            }
+          } else {
+            body = 'Поезда в депо нет.';
+          }
+          map.balloon.open(pointPlacemark.geometry.getCoordinates(), { contentHeader: header, contentBody: body });
+          document.getElementById('map').style.zIndex = '9999';
+        });
         map.geoObjects.add(depotLayer);
 
+        depotTracksLayer = new ymaps.GeoObjectCollection();
+        var defaultTrackStyle = { strokeColor: '#C4A574', strokeWidth: 1.5, strokeOpacity: 0.55, strokeStyle: 'shortdash' };
+        for (var t = 0; t < depotTracksData.length; t++) {
+          var line = new ymaps.Polyline(depotTracksData[t], {}, defaultTrackStyle);
+          depotTracksLayer.add(line);
+          depotTracksLines.push(line);
+        }
+        map.geoObjects.add(depotTracksLayer);
+
         trainOverlayContainer = document.getElementById('train-overlay-container');
-        map.events.add(['boundschange', 'actionend'], function () { updateAllTrainOverlays(); });
+        map.events.add(['boundschange', 'actionend'], function () {
+          updateAllTrainOverlays();
+          var zoom = map.getZoom();
+          if (zoom >= tracksMinZoom && !tracksVisible) {
+            map.geoObjects.add(depotTracksLayer);
+            tracksVisible = true;
+          } else if (zoom < tracksMinZoom && tracksVisible) {
+            map.geoObjects.remove(depotTracksLayer);
+            tracksVisible = false;
+          }
+          if (zoom >= pointMinZoom && !pointVisible) {
+            depotLayer.add(pointPlacemark);
+            pointVisible = true;
+          } else if (zoom < pointMinZoom && pointVisible) {
+            depotLayer.remove(pointPlacemark);
+            pointVisible = false;
+          }
+        });
+        if (map.getZoom() >= pointMinZoom) {
+          depotLayer.add(pointPlacemark);
+          pointVisible = true;
+        }
+
+        function onMapAreaResize() {
+          if (map && map.container && typeof map.container.fitToViewport === 'function') {
+            try { map.container.fitToViewport(); } catch (err) {}
+          }
+          updateAllTrainOverlays();
+        }
+        window.addEventListener('resize', onMapAreaResize);
+        if (typeof ResizeObserver !== 'undefined') {
+          var mapWrap = document.querySelector('.map-wrap');
+          if (mapWrap) {
+            var ro = new ResizeObserver(function () {
+              setTimeout(onMapAreaResize, 50);
+            });
+            ro.observe(mapWrap);
+          }
+        }
 
         document.getElementById('rect-lat').value = CENTER[0].toFixed(6);
         document.getElementById('rect-lon').value = CENTER[1].toFixed(6);
@@ -245,12 +488,82 @@
         mapContainer.addEventListener('mousemove', onMapMouseMove);
         mapContainer.addEventListener('mouseleave', function () { cursorCoordsEl.textContent = 'Наведите курсор на карту'; });
 
-        log('Карта и слои созданы');
+        map.events.add('click', function (e) {
+          var coords = e.get('coords');
+          if (!coords) return;
+          var lat = coords[0], lon = coords[1];
+          if (trackClickStep === 0) {
+            document.getElementById('track-lat1').value = lat.toFixed(6);
+            document.getElementById('track-lon1').value = lon.toFixed(6);
+            trackClickStep = 1;
+            log('Рельсы: задано начало. Кликните по карте — конец линии.');
+          } else {
+            document.getElementById('track-lat2').value = lat.toFixed(6);
+            document.getElementById('track-lon2').value = lon.toFixed(6);
+            trackClickStep = 0;
+            log('Рельсы: задан конец. Нажмите «Добавить путь» или снова кликните для новой линии.');
+          }
+        });
+
+        log('Карта и слои созданы.');
+        (function () {
+          var img = document.getElementById('last-recognition-img');
+          var errEl = document.getElementById('last-recognition-error');
+          if (img && errEl) {
+            img.onload = function () { errEl.style.display = 'none'; img.style.display = 'block'; };
+            img.onerror = function () { errEl.style.display = 'block'; img.style.display = 'none'; };
+          }
+        })();
+        setInterval(function () {
+          var img = document.getElementById('last-recognition-img');
+          if (img && img.src) img.src = LAST_SCREENSHOT_URL + '?t=' + Date.now();
+        }, 5000);
+
+        document.getElementById('btn-add-track').addEventListener('click', addTrackLine);
+        document.getElementById('btn-copy-tracks').addEventListener('click', copyTracksData);
+        document.getElementById('btn-remove-last-track').addEventListener('click', removeLastTrack);
 
         document.getElementById('btn-rect').addEventListener('click', addRectangle);
         document.getElementById('btn-remove-shape').addEventListener('click', removeLastShape);
 
+        (function () {
+          var layout = document.querySelector('.layout');
+          var panel = document.getElementById('side-panel');
+          var btnToggle = document.getElementById('btn-toggle-panel');
+          if (layout && panel && btnToggle) {
+            btnToggle.addEventListener('click', function () {
+              layout.classList.toggle('panel-hidden');
+              btnToggle.textContent = layout.classList.contains('panel-hidden') ? '▶' : '◀';
+              btnToggle.title = layout.classList.contains('panel-hidden') ? 'Развернуть панель' : 'Свернуть панель';
+              setTimeout(function () {
+                if (map && map.container && typeof map.container.fitToViewport === 'function') {
+                  try { map.container.fitToViewport(); } catch (err) {}
+                }
+                updateAllTrainOverlays();
+              }, 220);
+            });
+          }
+        })();
+
         connectMapWs();
+        initFirebaseSync();
+      }
+
+      function initFirebaseSync() {
+        if (typeof FIREBASE_CONFIG !== 'undefined' && FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL) {
+          try {
+            firebase.initializeApp(FIREBASE_CONFIG);
+            firebaseTrainsRef = firebase.database().ref('depot_trains');
+            firebaseTrainsRef.on('value', function (snapshot) { applyTrainsSnapshot(snapshot); });
+            firebaseRecognitionRef = firebase.database().ref('depot_recognition');
+            firebaseRecognitionRef.on('value', function (snapshot) { applyRecognitionSnapshot(snapshot); });
+            log('Синхронизация поездов включена — изменения видны всем по ссылке');
+          } catch (e) {
+            log('Ошибка Firebase: ' + (e.message || e));
+          }
+        } else {
+          log('Firebase не настроен — поезда только локально (настройте firebase-config.js для общей карты)');
+        }
       }
 
       function onMapMouseMove(e) {
@@ -318,30 +631,45 @@
         }
         var flipImage = document.getElementById('rect-flip-image').checked;
 
+        var data = { lat: lat, lon: lon, widthM: widthM, heightM: heightM, angleDeg: angleDeg, flipImage: flipImage };
+
+        if (firebaseTrainsRef) {
+          firebaseTrainsRef.transaction(function (cur) {
+            if (!cur) cur = [];
+            cur.push(data);
+            return cur;
+          }, function (err) {
+            if (err) log('Ошибка сохранения: ' + (err.message || err));
+            else log('Поезд добавлен — видят все по ссылке');
+          });
+          return;
+        }
+
         var div = document.createElement('div');
         div.className = 'train-overlay';
         var img = document.createElement('img');
         img.src = 'train.png';
         img.alt = 'Поезд';
         div.appendChild(img);
-
         trainOverlayContainer.appendChild(div);
-
-        var overlay = {
-          lat: lat,
-          lon: lon,
-          widthM: widthM,
-          heightM: heightM,
-          angleDeg: angleDeg,
-          flipImage: flipImage,
-          element: div
-        };
+        var overlay = { lat: lat, lon: lon, widthM: widthM, heightM: heightM, angleDeg: angleDeg, flipImage: flipImage, element: div };
         trainOverlays.push(overlay);
         updateTrainOverlay(overlay);
         log('Добавлен поезд (картинка и прямоугольник повёрнуты вместе)');
       }
 
       function removeLastShape() {
+        if (firebaseTrainsRef) {
+          firebaseTrainsRef.transaction(function (cur) {
+            if (!cur || !cur.length) return cur;
+            cur = cur.slice(0, cur.length - 1);
+            return cur;
+          }, function (err) {
+            if (err) log('Ошибка удаления: ' + (err.message || err));
+            else log('Последняя фигура удалена у всех');
+          });
+          return;
+        }
         if (trainOverlays.length === 0) { log('Нет добавленных фигур'); return; }
         var last = trainOverlays.pop();
         if (last.element.parentNode) last.element.parentNode.removeChild(last.element);
@@ -349,7 +677,58 @@
         log('Последняя фигура удалена');
       }
 
-      /** Добавить поезд по данным из распознавания (rect из config_screen_capture.json) */
+      var trackStyle = { strokeColor: '#C4A574', strokeWidth: 1.5, strokeOpacity: 0.55, strokeStyle: 'shortdash' };
+      var trackClickStep = 0;
+
+      function parseCoord(val) {
+        if (typeof val !== 'string') return NaN;
+        return parseFloat(val.trim().replace(',', '.'), 10);
+      }
+
+      function addTrackLine() {
+        var lat1 = parseCoord(document.getElementById('track-lat1').value);
+        var lon1 = parseCoord(document.getElementById('track-lon1').value);
+        var lat2 = parseCoord(document.getElementById('track-lat2').value);
+        var lon2 = parseCoord(document.getElementById('track-lon2').value);
+        if (isNaN(lat1) || isNaN(lon1) || isNaN(lat2) || isNaN(lon2)) {
+          log('Рельсы: нужны 4 числа. Начало: широта ' + (isNaN(lat1) ? '?' : lat1) + ', долгота ' + (isNaN(lon1) ? '?' : lon1) + '. Конец: широта ' + (isNaN(lat2) ? '?' : lat2) + ', долгота ' + (isNaN(lon2) ? '?' : lon2));
+          return;
+        }
+        var points = [[lat1, lon1], [lat2, lon2]];
+        try {
+          depotTracksData.push(points);
+          var line = new ymaps.Polyline(points, {}, { strokeColor: trackStyle.strokeColor, strokeWidth: trackStyle.strokeWidth, strokeOpacity: trackStyle.strokeOpacity, strokeStyle: trackStyle.strokeStyle });
+          depotTracksLayer.add(line);
+          depotTracksLines.push(line);
+          log('Добавлен путь №' + depotTracksData.length + ': [' + lat1.toFixed(5) + ',' + lon1.toFixed(5) + '] → [' + lat2.toFixed(5) + ',' + lon2.toFixed(5) + ']');
+        } catch (e) {
+          depotTracksData.pop();
+          log('Ошибка при добавлении пути: ' + (e.message || e));
+        }
+      }
+
+      function copyTracksData() {
+        var json = JSON.stringify(depotTracksData, null, 2);
+        if (depotTracksData.length === 0) {
+          log('Нет добавленных путей — нечего копировать');
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(json).then(function () { log('Данные путей скопированы в буфер'); }, function () { log('Данные путей:\n' + json); });
+        } else {
+          log('Данные путей (скопируйте вручную):\n' + json);
+        }
+      }
+
+      function removeLastTrack() {
+        if (depotTracksData.length === 0) { log('Нет добавленных путей'); return; }
+        depotTracksData.pop();
+        var line = depotTracksLines.pop();
+        depotTracksLayer.remove(line);
+        log('Удалён последний путь. Осталось: ' + depotTracksData.length);
+      }
+
+      /** Добавить поезд по данным из распознавания (rect из config_screen_capture.json). Пишем в Firebase — видят все по ссылке. */
       function addTrainFromRect(rect) {
         if (!rect || typeof rect.lat !== 'number' || typeof rect.lon !== 'number') return;
         removeRecognitionTrain();
@@ -359,6 +738,13 @@
         var heightM = typeof rect.height_m === 'number' ? rect.height_m : (trainImageWidth && trainImageHeight ? widthM * (trainImageHeight / trainImageWidth) : 2);
         var angleDeg = typeof rect.angle_deg === 'number' ? rect.angle_deg : 35;
 
+        var data = { lat: lat, lon: lon, widthM: widthM, heightM: heightM, angleDeg: angleDeg, flipImage: false };
+        if (firebaseRecognitionRef) {
+          firebaseRecognitionRef.set(data);
+          log('Поезд распознан — на карту добавлен (видят все по ссылке)');
+          return;
+        }
+
         var div = document.createElement('div');
         div.className = 'train-overlay';
         var img = document.createElement('img');
@@ -366,17 +752,7 @@
         img.alt = 'Поезд';
         div.appendChild(img);
         trainOverlayContainer.appendChild(div);
-
-        var overlay = {
-          lat: lat,
-          lon: lon,
-          widthM: widthM,
-          heightM: heightM,
-          angleDeg: angleDeg,
-          flipImage: false,
-          element: div,
-          fromRecognition: true
-        };
+        var overlay = { lat: lat, lon: lon, widthM: widthM, heightM: heightM, angleDeg: angleDeg, flipImage: false, element: div, fromRecognition: true };
         trainOverlays.push(overlay);
         recognitionTrainOverlay = overlay;
         updateTrainOverlay(overlay);
@@ -384,11 +760,12 @@
       }
 
       function removeRecognitionTrain() {
-        if (!recognitionTrainOverlay) return;
-        var idx = trainOverlays.indexOf(recognitionTrainOverlay);
-        if (idx !== -1) trainOverlays.splice(idx, 1);
-        if (recognitionTrainOverlay.element.parentNode) recognitionTrainOverlay.element.parentNode.removeChild(recognitionTrainOverlay.element);
-        recognitionTrainOverlay = null;
+        if (firebaseRecognitionRef) {
+          firebaseRecognitionRef.set(null);
+          log('Поезд вышел из депо — с карты удалён у всех');
+          return;
+        }
+        removeRecognitionOverlayLocal();
         log('Поезд вышел из депо — с карты удалён');
       }
 

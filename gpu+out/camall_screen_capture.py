@@ -145,6 +145,14 @@ def find_and_prepare_window(window_title):
         return None
 
 
+def get_primary_screen_region():
+    """Возвращает (left, top, width, height) основного (первого) монитора."""
+    with mss.mss() as sct:
+        # monitors[0] — все экраны, monitors[1] — первый монитор
+        mon = sct.monitors[1]
+        return (mon["left"], mon["top"], mon["width"], mon["height"])
+
+
 def capture_region(left, top, width, height):
     """Захват области экрана в BGR (numpy, формат для cv2)."""
     with mss.mss() as sct:
@@ -197,19 +205,37 @@ async def main():
     _map_ws_port = map_cfg.get("ws_port", 8765)
     _map_rect = map_cfg.get("rect") or {}
 
-    # Поиск окна, активация и развёртывание
-    if capture_cfg.get("type") == "window":
-        window_title = capture_cfg.get("window_title", "VLC")
+    # Поиск окна или фиксированная область
+    capture_type = capture_cfg.get("type")
+    window_title = capture_cfg.get("window_title", "VLC") if capture_type == "window" else None
+    region = None
+    left = top = width = height = 0
+
+    use_primary_fallback = False  # True = окно не нашли, захватываем экран (кадр потом масштабируем для OCR)
+    if capture_type == "window":
         region = find_and_prepare_window(window_title)
-        if region is None:
-            return
-        left, top, width, height = region
-    elif capture_cfg.get("type") == "region":
+        if region is not None:
+            left, top, width, height = region
+        else:
+            # Окно не найдено: можно задать в конфиге fallback_region [left, top, width, height],
+            # иначе захват всего основного экрана (для OCR кадр уменьшим до разумного размера)
+            fallback = capture_cfg.get("fallback_region")
+            if isinstance(fallback, list) and len(fallback) == 4:
+                left, top, width, height = fallback
+                print("[~] Окно не найдено — захват по fallback_region из конфига.")
+            else:
+                left, top, width, height = get_primary_screen_region()
+                use_primary_fallback = True
+                print("[~] Окно не найдено — захват основного экрана (кадр будет уменьшен для распознавания).")
+            region = (left, top, width, height)
+            print(f"[~] Область: left={left}, top={top}, width={width}, height={height}")
+    elif capture_type == "region":
         r = capture_cfg.get("region", [])
         if len(r) != 4:
             print("[!] Для type=region укажите region: [left, top, width, height]")
             return
         left, top, width, height = r
+        region = (left, top, width, height)
         print(f"[~] Захват по области: {left}, {top}, {width}, {height}")
     else:
         print("[!] В capture укажите type: 'window' или 'region' и window_title или region.")
@@ -246,11 +272,23 @@ async def main():
     last_confirmed_number = None
     consecutive_no_recognition = 0
 
+    # При захвате всего экрана (fallback) уменьшаем кадр для OCR — иначе распознавание хуже
+    max_fallback_width = 1920
+
     while True:
         try:
             frame = await loop.run_in_executor(
                 executor, capture_region, left, top, width, height
             )
+            if use_primary_fallback and frame is not None and (frame.shape[1] > max_fallback_width or frame.shape[0] > 1080):
+                def _resize_for_ocr(img):
+                    h, w = img.shape[:2]
+                    scale = min(max_fallback_width / w, 1080 / h, 1.0)
+                    if scale >= 1.0:
+                        return img
+                    new_w, new_h = int(w * scale), int(h * scale)
+                    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                frame = await loop.run_in_executor(executor, _resize_for_ocr, frame)
             confirmed, saw_number = await process_frame(frame, processor, executor)
             if confirmed is not None:
                 train_part, wagon_part = processor.split_train_and_wagon(confirmed)
