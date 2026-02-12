@@ -1,0 +1,26 @@
+{
+  "capture_interval": 4,
+  "exit_frames_threshold": 3,
+  "capture": {
+    "type": "window",
+    "window_title": "Подключение к удаленному"
+  },
+  "map": {
+    "ws_port": 8765,
+    "rect": {
+      "lat": 55.659779,
+      "lon": 37.714176,
+      "width_m": 50,
+      "height_m": 2,
+      "angle_deg": 35,
+      "angle_height_deg": 0
+    }
+  },
+  "db": {
+    "host": "your-db-host",
+    "port": 5432,
+    "user": "postgres",
+    "password": "YOUR_PASSWORD",
+    "database": "your_database"
+  }
+}

@@ -1,0 +1,7 @@
+# Зависимости для camall_screen_capture.py (захват окна + карта)
+opencv-python
+numpy
+mss
+pygetwindow
+websockets
+psycopg2-binary

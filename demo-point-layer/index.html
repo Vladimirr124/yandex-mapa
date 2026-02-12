@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Пробный слой — точки и фигуры депо</title>
+  <script src="https://api-maps.yandex.ru/2.1/?apikey=28e257e1-ade9-435c-9e0d-bd5e5aaa3c33&lang=ru_RU" type="text/javascript"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .layout { display: flex; height: 100vh; }
+    .map-wrap { flex: 1; min-width: 0; position: relative; }
+    #map { width: 100%; height: 100%; }
+    .panel {
+      width: 260px;
+      padding: 16px;
+      background: #f5f5f5;
+      border-left: 1px solid #ddd;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+    }
+    .panel h2 { margin: 0 0 8px; font-size: 1rem; }
+    .panel p { margin: 0; font-size: 13px; color: #555; }
+    .btn-group { display: flex; flex-direction: column; gap: 8px; }
+    button {
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+    }
+    button:hover { background: #0052a3; }
+    button.danger { background: #c00; }
+    button.danger:hover { background: #a00; }
+    .log {
+      margin-top: auto;
+      font-size: 12px;
+      color: #666;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .log div { margin-bottom: 4px; }
+    .coords-box {
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 13px;
+    }
+    .coords-box label { display: block; margin-bottom: 4px; color: #333; }
+    .coords-box input { width: 100%; padding: 6px; margin-bottom: 8px; font-family: monospace; }
+    .coords-cursor { font-family: monospace; font-size: 12px; color: #0066cc; margin-top: 6px; word-break: break-all; }
+    .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .form-row label { flex: 0 0 auto; width: 70px; margin-bottom: 0; }
+    .form-row input { flex: 1; margin-bottom: 0; }
+    #train-overlay-container {
+      position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 100;
+    }
+    .train-overlay {
+      position: absolute;
+      transform-origin: center center;
+      overflow: hidden;
+    }
+    .train-overlay img {
+      display: block; width: 100%; height: 100%; object-fit: contain;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div id="train-overlay-container"></div>
+    </div>
+    <div class="panel">
+      <h2>Координаты</h2>
+      <div class="coords-box">
+        <p class="coords-cursor" id="cursor-coords">Наведите курсор на карту</p>
+      </div>
+
+      <div class="coords-box">
+        <label>Позиция (широта, долгота):</label>
+        <div class="form-row">
+          <label>широта</label>
+          <input type="text" id="rect-lat" placeholder="55.659779" />
+        </div>
+        <div class="form-row">
+          <label>долгота</label>
+          <input type="text" id="rect-lon" placeholder="37.714176" />
+        </div>
+        <label>Размер (м):</label>
+        <div class="form-row">
+          <label>ширина</label>
+          <input type="number" id="rect-width" placeholder="50" min="1" step="1" />
+        </div>
+        <div class="form-row">
+          <label>высота</label>
+          <input type="number" id="rect-height" placeholder="2" min="1" step="1" />
+        </div>
+        <label>Поворот и масштаб картинки:</label>
+        <div class="form-row">
+          <label>угол (°)</label>
+          <input type="number" id="rect-angle" placeholder="35" min="0" max="360" step="1" title="0° = горизонтально, 35–50° = вдоль диагональных путей" />
+        </div>
+        <p style="margin: -4px 0 8px 70px; font-size: 11px; color: #666;">0° — горизонтально. Для путей по диагонали введите 30–50° (например 35).</p>
+        <div class="form-row">
+          <label>по высоте (°)</label>
+          <input type="number" id="rect-angle-height" placeholder="0" min="-180" max="180" step="1" title="Наклон: 0 = прямоугольник (картинка не искажается). Не 0 — параллелограмм, картинка сплющивается." />
+        </div>
+        <div class="form-row" style="align-items: center;">
+          <label style="width: auto; margin-right: 8px;"><input type="checkbox" id="rect-flip-image" title="Зеркально отобразить картинку поезда" /> Развернуть картинку</label>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="button" id="btn-rect">Добавить прямоугольник</button>
+        <button type="button" id="btn-remove-shape" class="danger">Удалить последнюю фигуру</button>
+      </div>
+
+      <p style="font-size: 11px; color: #666; margin: 8px 0 0;">При распознавании (camall_screen_capture.py) поезд появляется на карте при входе и удаляется при выходе из депо (WebSocket порт 8765).</p>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var CENTER = [55.659779, 37.714176];
+      var map;
+      var depotLayer;
+      var logEl = document.getElementById('log');
+      var cursorCoordsEl = document.getElementById('cursor-coords');
+      /** Добавленные поезда: массив { lat, lon, widthM, heightM, angleDeg, flipImage, element, fromRecognition? } */
+      var trainOverlays = [];
+      var trainOverlayContainer = null;
+      /** Поезд, добавленный по событию распознавания (удаляется при train_exited) */
+      var recognitionTrainOverlay = null;
+      var mapWs = null;
+      var mapWsUrl = 'ws://localhost:8765';
+      /** Пропорции картинки поезда (ширина x высота) */
+      var trainImageWidth = 0;
+      var trainImageHeight = 0;
+
+      /** Размер оси‑алigned прямоугольника в пикселях (картинка «как есть», без поворота геометрии) */
+      function getAxisAlignedPixelSize(lat, lon, widthM, heightM) {
+        var cosLat = Math.cos((lat * Math.PI) / 180);
+        var degPerMLat = 1 / 111320;
+        var degPerMLon = 1 / (111320 * cosLat);
+        var centerPx = geoToPixel(lat, lon);
+        var rightPx = geoToPixel(lat, lon + (widthM / 2) * degPerMLon);
+        var topPx = geoToPixel(lat + (heightM / 2) * degPerMLat, lon);
+        var widthPx = 2 * Math.sqrt(Math.pow(rightPx[0] - centerPx[0], 2) + Math.pow(rightPx[1] - centerPx[1], 2));
+        var heightPx = 2 * Math.sqrt(Math.pow(topPx[0] - centerPx[0], 2) + Math.pow(topPx[1] - centerPx[1], 2));
+        return { centerPx: centerPx, widthPx: widthPx, heightPx: heightPx };
+      }
+
+      function updateTrainOverlay(overlay) {
+        var s = getAxisAlignedPixelSize(overlay.lat, overlay.lon, overlay.widthM, overlay.heightM);
+        var w = s.widthPx;
+        var h = s.heightPx;
+        var cx = s.centerPx[0];
+        var cy = s.centerPx[1];
+        var angle = overlay.angleDeg + 94;
+        if (overlay.flipImage) angle += 180;
+        var el = overlay.element;
+        el.style.width = w + 'px';
+        el.style.height = h + 'px';
+        el.style.left = (cx - w / 2) + 'px';
+        el.style.top = (cy - h / 2) + 'px';
+        el.style.transform = 'rotate(' + angle + 'deg)';
+      }
+
+      function updateAllTrainOverlays() {
+        for (var i = 0; i < trainOverlays.length; i++) updateTrainOverlay(trainOverlays[i]);
+      }
+
+      /** Строит кольцо углов прямоугольника в геокоординатах [lat, lon] (4 точки без замыкания) */
+      function buildRectRing(lat, lon, widthM, heightM, angleDeg, angleHeightDeg) {
+        var d = metersToDegrees(lat, widthM, heightM);
+        var hw = d.lonDeg;
+        var hh = d.latDeg;
+        var skew = (angleHeightDeg * Math.PI) / 180;
+        var tanSkew = Math.abs(angleHeightDeg) < 0.01 ? 0 : Math.tan(skew);
+        var corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+        corners = corners.map(function (p) {
+          var lonOff = p[0] + p[1] * tanSkew;
+          var latOff = p[1];
+          return [lonOff, latOff];
+        });
+        var theta = (angleDeg * Math.PI) / 180;
+        return corners.map(function (p) {
+          var lonOff = p[0] * Math.cos(theta) - p[1] * Math.sin(theta);
+          var latOff = p[0] * Math.sin(theta) + p[1] * Math.cos(theta);
+          return [lat + latOff, lon + lonOff];
+        });
+      }
+
+      function log(msg) {
+        var line = document.createElement('div');
+        line.textContent = new Date().toLocaleTimeString('ru-RU') + ' — ' + msg;
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function init() {
+        map = new ymaps.Map('map', {
+          center: CENTER,
+          zoom: 15,
+          controls: ['zoomControl', 'fullscreenControl']
+        });
+
+        depotLayer = new ymaps.GeoObjectCollection();
+        map.geoObjects.add(depotLayer);
+
+        trainOverlayContainer = document.getElementById('train-overlay-container');
+        map.events.add(['boundschange', 'actionend'], function () { updateAllTrainOverlays(); });
+
+        document.getElementById('rect-lat').value = CENTER[0].toFixed(6);
+        document.getElementById('rect-lon').value = CENTER[1].toFixed(6);
+        document.getElementById('rect-width').value = '50';
+        document.getElementById('rect-angle').value = '35';
+        document.getElementById('rect-angle-height').value = '0';
+
+        // Загружаем train.png, чтобы подстроить высоту прямоугольника под пропорции картинки
+        var img = new Image();
+        img.onload = function () {
+          trainImageWidth = img.naturalWidth;
+          trainImageHeight = img.naturalHeight;
+          var w = 50;
+          var h = Math.round(w * (trainImageHeight / trainImageWidth) * 10) / 10;
+          document.getElementById('rect-height').value = String(h);
+          log('Пропорции поезда: ' + trainImageWidth + '×' + trainImageHeight + ', высота по умолчанию: ' + h + ' м');
+        };
+        img.onerror = function () {
+          document.getElementById('rect-height').value = '10';
+          log('train.png не загружен — используем высоту 10 м');
+        };
+        img.src = 'train.png';
+
+        var mapContainer = document.getElementById('map');
+        mapContainer.addEventListener('mousemove', onMapMouseMove);
+        mapContainer.addEventListener('mouseleave', function () { cursorCoordsEl.textContent = 'Наведите курсор на карту'; });
+
+        log('Карта и слои созданы');
+
+        document.getElementById('btn-rect').addEventListener('click', addRectangle);
+        document.getElementById('btn-remove-shape').addEventListener('click', removeLastShape);
+
+        connectMapWs();
+      }
+
+      function onMapMouseMove(e) {
+        var el = document.getElementById('map');
+        var rect = el.getBoundingClientRect();
+        var x = (e.clientX - rect.left) / rect.width;
+        var y = (e.clientY - rect.top) / rect.height;
+        if (x < 0 || x > 1 || y < 0 || y > 1) return;
+        var bounds = map.getBounds();
+        var lat = bounds[1][0] - y * (bounds[1][0] - bounds[0][0]);
+        var lon = bounds[0][1] + x * (bounds[1][1] - bounds[0][1]);
+        cursorCoordsEl.textContent = lat.toFixed(6) + ', ' + lon.toFixed(6);
+      }
+
+      function metersToDegrees(lat, widthM, heightM) {
+        var latDeg = heightM / 2 / 111320;
+        var lonDeg = (widthM / 2) / (111320 * Math.cos((lat * Math.PI) / 180));
+        return { latDeg: latDeg, lonDeg: lonDeg };
+      }
+
+      /** Переводит геокоординаты в пиксели на экране (по текущим bounds и размеру контейнера) */
+      function geoToPixel(lat, lon) {
+        var bounds = map.getBounds();
+        var el = document.getElementById('map');
+        var w = el.offsetWidth;
+        var h = el.offsetHeight;
+        var x = (lon - bounds[0][1]) / (bounds[1][1] - bounds[0][1]) * w;
+        var y = (bounds[1][0] - lat) / (bounds[1][0] - bounds[0][0]) * h;
+        return [x, y];
+      }
+
+      /** Считает высоту в метрах так, чтобы на экране прямоугольник имел те же пропорции, что и картинка */
+      function heightMForScreenAspect(lat, lon, widthM, angleDeg) {
+        if (!trainImageWidth || !trainImageHeight) return widthM * 0.1;
+        var rad = (angleDeg * Math.PI) / 180;
+        var cosLat = Math.cos((lat * Math.PI) / 180);
+        var mPerDegLat = 111320;
+        var degPerMLat = 1 / mPerDegLat;
+        var degPerMLon = 1 / (111320 * cosLat);
+        var centerPx = geoToPixel(lat, lon);
+        var halfWLat = (widthM / 2) * Math.cos(rad) * degPerMLat;
+        var halfWLon = (widthM / 2) * Math.sin(rad) * degPerMLon;
+        var widthPointPx = geoToPixel(lat + halfWLat, lon + halfWLon);
+        var pixelW = Math.sqrt(Math.pow(widthPointPx[0] - centerPx[0], 2) + Math.pow(widthPointPx[1] - centerPx[1], 2));
+        var halfHLat = -(widthM / 2) * Math.sin(rad) * degPerMLat;
+        var halfHLon = (widthM / 2) * Math.cos(rad) * degPerMLon;
+        var heightPointPx = geoToPixel(lat + halfHLat, lon + halfHLon);
+        var pixelH = Math.sqrt(Math.pow(heightPointPx[0] - centerPx[0], 2) + Math.pow(heightPointPx[1] - centerPx[1], 2));
+        if (pixelH < 1) return widthM * (trainImageHeight / trainImageWidth);
+        var heightM = widthM * (pixelW / (2 * pixelH)) * (trainImageHeight / trainImageWidth);
+        return Math.max(0.5, heightM);
+      }
+
+      function addRectangle() {
+        var lat = parseFloat(document.getElementById('rect-lat').value.replace(',', '.')) || CENTER[0];
+        var lon = parseFloat(document.getElementById('rect-lon').value.replace(',', '.')) || CENTER[1];
+        var widthM = parseFloat(document.getElementById('rect-width').value) || 50;
+        var angleDeg = parseFloat(document.getElementById('rect-angle').value) || 35;
+        var heightM;
+        if (trainImageWidth && trainImageHeight) {
+          heightM = heightMForScreenAspect(lat, lon, widthM, 0);
+          document.getElementById('rect-height').value = Math.round(heightM * 10) / 10;
+        } else {
+          heightM = parseFloat(document.getElementById('rect-height').value) || 10;
+        }
+        var flipImage = document.getElementById('rect-flip-image').checked;
+
+        var div = document.createElement('div');
+        div.className = 'train-overlay';
+        var img = document.createElement('img');
+        img.src = 'train.png';
+        img.alt = 'Поезд';
+        div.appendChild(img);
+
+        trainOverlayContainer.appendChild(div);
+
+        var overlay = {
+          lat: lat,
+          lon: lon,
+          widthM: widthM,
+          heightM: heightM,
+          angleDeg: angleDeg,
+          flipImage: flipImage,
+          element: div
+        };
+        trainOverlays.push(overlay);
+        updateTrainOverlay(overlay);
+        log('Добавлен поезд (картинка и прямоугольник повёрнуты вместе)');
+      }
+
+      function removeLastShape() {
+        if (trainOverlays.length === 0) { log('Нет добавленных фигур'); return; }
+        var last = trainOverlays.pop();
+        if (last.element.parentNode) last.element.parentNode.removeChild(last.element);
+        if (last === recognitionTrainOverlay) recognitionTrainOverlay = null;
+        log('Последняя фигура удалена');
+      }
+
+      /** Добавить поезд по данным из распознавания (rect из config_screen_capture.json) */
+      function addTrainFromRect(rect) {
+        if (!rect || typeof rect.lat !== 'number' || typeof rect.lon !== 'number') return;
+        removeRecognitionTrain();
+        var lat = rect.lat;
+        var lon = rect.lon;
+        var widthM = typeof rect.width_m === 'number' ? rect.width_m : 50;
+        var heightM = typeof rect.height_m === 'number' ? rect.height_m : (trainImageWidth && trainImageHeight ? widthM * (trainImageHeight / trainImageWidth) : 2);
+        var angleDeg = typeof rect.angle_deg === 'number' ? rect.angle_deg : 35;
+
+        var div = document.createElement('div');
+        div.className = 'train-overlay';
+        var img = document.createElement('img');
+        img.src = 'train.png';
+        img.alt = 'Поезд';
+        div.appendChild(img);
+        trainOverlayContainer.appendChild(div);
+
+        var overlay = {
+          lat: lat,
+          lon: lon,
+          widthM: widthM,
+          heightM: heightM,
+          angleDeg: angleDeg,
+          flipImage: false,
+          element: div,
+          fromRecognition: true
+        };
+        trainOverlays.push(overlay);
+        recognitionTrainOverlay = overlay;
+        updateTrainOverlay(overlay);
+        log('Поезд распознан — на карту добавлен');
+      }
+
+      function removeRecognitionTrain() {
+        if (!recognitionTrainOverlay) return;
+        var idx = trainOverlays.indexOf(recognitionTrainOverlay);
+        if (idx !== -1) trainOverlays.splice(idx, 1);
+        if (recognitionTrainOverlay.element.parentNode) recognitionTrainOverlay.element.parentNode.removeChild(recognitionTrainOverlay.element);
+        recognitionTrainOverlay = null;
+        log('Поезд вышел из депо — с карты удалён');
+      }
+
+      function connectMapWs() {
+        if (mapWs && mapWs.readyState === WebSocket.OPEN) return;
+        try {
+          mapWs = new WebSocket(mapWsUrl);
+          mapWs.onopen = function () { log('Подключено к распознаванию (WebSocket)'); };
+          mapWs.onclose = function () {
+            mapWs = null;
+            log('Соединение с распознаванием закрыто. Переподключение через 5 с.');
+            setTimeout(connectMapWs, 5000);
+          };
+          mapWs.onerror = function () { };
+          mapWs.onmessage = function (ev) {
+            try {
+              var data = JSON.parse(ev.data);
+              if (data.event === 'train_entered' && data.rect) addTrainFromRect(data.rect);
+              else if (data.event === 'train_exited') removeRecognitionTrain();
+            } catch (e) { }
+          };
+        } catch (e) {
+          log('WebSocket недоступен: ' + mapWsUrl);
+          setTimeout(connectMapWs, 5000);
+        }
+      }
+
+      ymaps.ready(init);
+    })();
+  </script>
+</body>
+</html>

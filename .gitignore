@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Конфиги с паролями и секретами — не выкладывать
+gpu+out/config_screen_capture.json
+gpu+out/config_cams.json
+
+# Логи и временные файлы
+.playwright-mcp/
+*.log
+
+# Служебные
+.DS_Store
+Thumbs.db
