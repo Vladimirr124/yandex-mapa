@@ -232,6 +232,8 @@
       var LAST_SCREENSHOT_URL = 'http://localhost:8766/last.jpg';
       /** URL из Firebase (depot_recognition.screenshotUrl), если есть — используется в баллуне. */
       var lastRecognitionScreenshotUrl = null;
+      /** Blob-URL последнего загруженного скриншота (для баллуна: у <img> нельзя передать ngrok-skip-browser-warning). */
+      var lastScreenshotBlobUrlForBalloon = null;
 
       (function applyUrlParams() {
         var params = new URLSearchParams(window.location.search);
@@ -261,6 +263,7 @@
               if (img._screenshotBlobUrl) URL.revokeObjectURL(img._screenshotBlobUrl);
               img._screenshotBlobUrl = URL.createObjectURL(blob);
               img.src = img._screenshotBlobUrl;
+              lastScreenshotBlobUrlForBalloon = img._screenshotBlobUrl;
               if (el) el.style.display = 'none';
               img.style.display = 'block';
             })
@@ -435,8 +438,15 @@
           if (trainOverlays.length > 0) {
             body = 'Поезд в депо.';
             var imgUrl = lastRecognitionScreenshotUrl || LAST_SCREENSHOT_URL;
+            var imgSrc = imgUrl;
+            var useNgrok = imgUrl && /ngrok-free\.app|ngrok\.io/i.test(imgUrl);
+            if (useNgrok && lastScreenshotBlobUrlForBalloon) imgSrc = lastScreenshotBlobUrlForBalloon;
             if (imgUrl) {
-              body += '<img src="' + imgUrl + '" style="max-width:280px;max-height:300px;margin-top:8px;display:block;" alt="Скриншот" />';
+              if (useNgrok && !lastScreenshotBlobUrlForBalloon) {
+                body += '<p style="font-size:12px;color:#666;margin-top:8px;">Скриншот не загружен (проверьте сервер и ngrok в блоке ниже).</p>';
+              } else {
+                body += '<img src="' + imgSrc + '" style="max-width:280px;max-height:300px;margin-top:8px;display:block;" alt="Скриншот" />';
+              }
             }
           } else {
             body = 'Поезда в депо нет.';
