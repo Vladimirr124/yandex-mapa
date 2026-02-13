@@ -33,7 +33,20 @@
   `?ws_url=wss://твой-сервер.com`  
   — если поднимешь WebSocket для распознавания на том же сервере.
 
-**CORS при использовании ngrok:** карта с GitHub Pages делает запрос к твоему ngrok-URL с заголовком `ngrok-skip-browser-warning`, из‑за чего браузер отправляет preflight (OPTIONS). Сервер `serve_last_screenshot.py` отвечает на OPTIONS с заголовками CORS (`Access-Control-Allow-Origin: *` и др.). Убедись, что запущен именно этот скрипт и что ngrok пересылает запросы (в т.ч. OPTIONS) на порт 8766. Проверка: `curl -X OPTIONS -i https://твой-ngrok-URL/last.jpg` — в ответе должны быть заголовки `Access-Control-Allow-Origin`.
+**CORS при использовании ngrok:** браузер отправляет preflight (OPTIONS) к ngrok; без CORS-заголовков в ответе карта не загрузит скриншот. Запускай ngrok **с политикой**, которая отвечает на OPTIONS с CORS и добавляет заголовок к ответам GET:
+
+1. Запусти сервер: `python gpu+out/serve_last_screenshot.py`
+2. Запусти ngrok с файлом политики (из корня репо):  
+   `ngrok http 8766 --traffic-policy-file=gpu+out/ngrok-cors-policy.yml`  
+   Файл `gpu+out/ngrok-cors-policy.yml` лежит в репо.
+
+Без `--traffic-policy-file` preflight может не получать CORS, и загрузка с GitHub Pages будет падать с ошибкой CORS.
+
+**Один скрипт для запуска (Windows):** из корня репо выполни в PowerShell:  
+`.\start_screenshot_and_ngrok.ps1`  
+Скрипт остановит старые процессы на 8766 и ngrok, запустит сервер и ngrok с политикой в отдельных окнах и откроет в браузере карту с актуальной ссылкой на скриншот. Если скрипт ругается на выполнение:  
+`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`  
+затем снова `.\start_screenshot_and_ngrok.ps1`.
 
 ## Поезда видны всем по ссылке (Firebase)
 

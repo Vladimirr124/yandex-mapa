@@ -1,0 +1,15 @@
+# Политика ngrok: отвечать на preflight (OPTIONS) с CORS, чтобы карта с GitHub Pages могла загружать /last.jpg
+# Запуск из корня репо: ngrok http 8766 --traffic-policy-file=gpu+out/ngrok-cors-policy.yml
+on_http_request:
+  - expressions:
+      - "req.method == 'OPTIONS'"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 200
+          body: ""
+          headers:
+            Access-Control-Allow-Origin: "*"
+            Access-Control-Allow-Methods: "GET, OPTIONS"
+            Access-Control-Allow-Headers: "ngrok-skip-browser-warning"
+            Access-Control-Max-Age: "86400"

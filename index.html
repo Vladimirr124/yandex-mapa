@@ -220,6 +220,8 @@
       var recognitionTrainOverlay = null;
       var mapWs = null;
       var mapWsUrl = 'ws://localhost:8765';
+      /** Не подключаться к WebSocket при открытии с GitHub Pages (нет доступа к localhost:8765) — только при localhost или при явном ws_url */
+      var shouldUseMapWs = true;
       /** Пропорции картинки поезда (ширина x высота) */
       var trainImageWidth = 0;
       var trainImageHeight = 0;
@@ -240,6 +242,8 @@
           LAST_SCREENSHOT_URL = /\/last\.jpg$/i.test(u) ? u : u + '/last.jpg';
         }
         if (wsUrl) mapWsUrl = wsUrl;
+        var onLocalhost = /^(localhost|127\.0\.0\.1)$/i.test(location.hostname);
+        shouldUseMapWs = onLocalhost || !!params.get('ws_url');
         var img = document.getElementById('last-recognition-img');
         if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
       })();
@@ -252,7 +256,7 @@
         if (isNgrok) {
           var opts = { headers: { 'ngrok-skip-browser-warning': 'true' } };
           fetch(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), opts)
-            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
+            .then(function (r) { if (!r.ok) throw { status: r.status }; return r.blob(); })
             .then(function (blob) {
               if (img._screenshotBlobUrl) URL.revokeObjectURL(img._screenshotBlobUrl);
               img._screenshotBlobUrl = URL.createObjectURL(blob);
@@ -263,7 +267,9 @@
             .catch(function (e) {
               if (el) {
                 el.style.display = 'block';
-                el.textContent = 'Не загрузилось (проверьте CORS: сервер serve_last_screenshot.py должен отвечать на OPTIONS с заголовком Access-Control-Allow-Origin; ngrok должен пересылать OPTIONS на локальный сервер).';
+                if (e && e.status === 502) el.textContent = '502 Bad Gateway: ngrok не достучался до порта 8766. Проверьте: сервер serve_last_screenshot.py запущен, ngrok запущен с портом 8766 и политикой: ngrok http 8766 --traffic-policy-file=gpu+out/ngrok-cors-policy.yml';
+                else if (e && e.status) el.textContent = 'Ошибка загрузки: ' + e.status;
+                else el.textContent = 'Не загрузилось (CORS или сеть). Убедитесь, что ngrok запущен с политикой: --traffic-policy-file=gpu+out/ngrok-cors-policy.yml';
               }
               img.style.display = 'none';
             });
@@ -798,6 +804,7 @@
       }
 
       function connectMapWs() {
+        if (!shouldUseMapWs) return;
         if (mapWs && mapWs.readyState === WebSocket.OPEN) return;
         try {
           mapWs = new WebSocket(mapWsUrl);
