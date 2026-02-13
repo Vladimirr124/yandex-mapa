@@ -272,7 +272,9 @@ async def main():
     last_confirmed_number = None
     consecutive_no_recognition = 0
 
-    # При захвате всего экрана (fallback) уменьшаем кадр для OCR — иначе распознавание хуже
+    # При захвате всего экрана (fallback) по умолчанию уменьшаем кадр для скорости.
+    # Если распознавание хуже — в capture задайте "resize_fallback_for_ocr": false (кадр без уменьшения).
+    resize_fallback = capture_cfg.get("resize_fallback_for_ocr", True)
     max_fallback_width = 1920
 
     while True:
@@ -280,7 +282,7 @@ async def main():
             frame = await loop.run_in_executor(
                 executor, capture_region, left, top, width, height
             )
-            if use_primary_fallback and frame is not None and (frame.shape[1] > max_fallback_width or frame.shape[0] > 1080):
+            if resize_fallback and use_primary_fallback and frame is not None and (frame.shape[1] > max_fallback_width or frame.shape[0] > 1080):
                 def _resize_for_ocr(img):
                     h, w = img.shape[:2]
                     scale = min(max_fallback_width / w, 1080 / h, 1.0)

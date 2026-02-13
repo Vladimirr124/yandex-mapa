@@ -177,6 +177,14 @@ class ImageProcessor:
     def get_utc3_time(self):
         return datetime.now(timezone(timedelta(hours=3)))
 
+    def fix_ocr_prefix_typos(self, text):
+        """Типичные ошибки OCR в префиксе: И вместо 2 (ЭПИДМ→ЭП2ДМ)."""
+        if not text:
+            return text
+        s = str(text).replace('ЭПИДМ', 'ЭП2ДМ').replace('ЭПИД', 'ЭП2Д')
+        s = s.replace('ЭГИТв', 'ЭГ2Тв').replace('ЭГЭИТв', 'ЭГЭ2Тв')
+        return s
+
     def normalize_for_prefix(self, text):
         rules = {'4':'Д','O':'0','1':'И','Z':'2','S':'5','7':'Г','9':'Г','И':'М','Н':'М','К':'И','З':'Э','А':'Д',' ':'-'}
         return ''.join(rules.get(c,c) for c in text).upper()
@@ -207,18 +215,30 @@ class ImageProcessor:
     def is_valid_train_number(self, digits):
         return len(digits) in {3,4,5,6}
 
+    def _bbox_center_y(self, bbox):
+        """Центр bbox по вертикали (EasyOCR: список из 4 точек)."""
+        try:
+            pts = np.array(bbox)
+            return float(pts[:, 1].mean())
+        except Exception:
+            return 0.0
+
     def extract_valid_combination(self, ocr_blocks):
         PREFIX_DIGIT_RULES = {"ЭП2Д":6,"ЭП2ДМ":6,"ЭД4М":6,"ЭД4МК":6,"ЭД4Мку":6,"ЭР2Р":6,"ЭД2Т":6,
                               "ЭГ2Тв":6,"ЭГЭ2Тв":6,"РА-3":6,"ДП-М":6}
-        valid_prefixes = [(self.find_best_prefix_match(t), conf) for _, t, conf in ocr_blocks if self.find_best_prefix_match(t)]
-        valid_numbers = [(self.extract_digits(t), conf) for _, t, conf in ocr_blocks if self.is_valid_train_number(self.extract_digits(t))]
+        valid_prefixes = [(self.find_best_prefix_match(self.fix_ocr_prefix_typos(t)), conf, bbox) for bbox, t, conf in ocr_blocks if self.find_best_prefix_match(self.fix_ocr_prefix_typos(t))]
+        valid_numbers = [(self.extract_digits(t), conf, bbox) for bbox, t, conf in ocr_blocks if self.is_valid_train_number(self.extract_digits(t))]
         best_comb, best_conf = None, 0
-        for p, pc in valid_prefixes:
-            for n, nc in valid_numbers:
-                expected_len = PREFIX_DIGIT_RULES.get(p,len(n))
+        for p, pc, bbox_p in valid_prefixes:
+            cy_p = self._bbox_center_y(bbox_p)
+            for n, nc, bbox_n in valid_numbers:
+                # Склеивать только блоки с близкой вертикалью (одна строка) — иначе берём цифры с другого конца экрана
+                if abs(cy_p - self._bbox_center_y(bbox_n)) > 50:
+                    continue
+                expected_len = PREFIX_DIGIT_RULES.get(p, len(n))
                 n_trim = n[:min(expected_len, len(n))]
-                conf_avg = (pc+nc)/2
-                if conf_avg>best_conf:
+                conf_avg = (pc + nc) / 2
+                if conf_avg > best_conf:
                     best_comb = f"{p}-{n_trim}"
                     best_conf = conf_avg
         return best_comb
@@ -229,7 +249,7 @@ class ImageProcessor:
         return digits[:max_len] if digits else s
 
     def try_direct_patterns(self, ocr_blocks):
-        combined = ' '.join([t for _,t,_ in ocr_blocks])
+        combined = ' '.join([self.fix_ocr_prefix_typos(t) for _, t, _ in ocr_blocks])
         combined = self.normalize_for_prefix(combined)
         patterns = [r'(ЭГЭ2Тв)-?\s*([\d\s]{3,12})',r'(ЭГ2Тв)-?\s*([\d\s]{3,12})',r'(ЭП2Д)-?(\d{4,6})',
                     r'(ЭП2ДМ)-?(\d{4,6})',r'(ЭД4М)-?(\d{3,6})',r'(ЭД4МК)-?(\d{4,6})',
@@ -263,7 +283,8 @@ class ImageProcessor:
                 continue
             if date_like.search(text):
                 continue
-            norm = self.normalize_for_prefix(text)
+            text_fixed = self.fix_ocr_prefix_typos(text)
+            norm = self.normalize_for_prefix(text_fixed)
             for pat_item in full_patterns:
                 pat, max_d = (pat_item[0], pat_item[1]) if isinstance(pat_item, tuple) else (pat_item, 6)
                 m = re.search(pat, norm, re.IGNORECASE)
@@ -277,21 +298,40 @@ class ImageProcessor:
         return best_num
 
     def preprocess_enhanced(self, image):
+        """Бинаризация Otsu — на полном экране даёт плохой порог для полосы с номером."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
         enhanced = clahe.apply(gray)
-        blurred = cv2.medianBlur(enhanced,3)
-        _, thresh = cv2.threshold(blurred,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+        blurred = cv2.medianBlur(enhanced, 3)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         return thresh
 
+    def preprocess_grayscale_for_ocr(self, image):
+        """Grayscale + CLAHE без Otsu — EasyOCR лучше читает с полутонов, номер не портится."""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        blurred = cv2.medianBlur(enhanced, 3)
+        return blurred
+
     def recognize_text_enhanced(self, image):
-        processed = self.preprocess_enhanced(image)
-        ocr_results = self.reader.readtext(processed)
+        # Сначала OCR по grayscale (без Otsu) — стабильнее для номера на полосе при захвате всего экрана
+        gray_for_ocr = self.preprocess_grayscale_for_ocr(image)
+        ocr_results = self.reader.readtext(gray_for_ocr)
         num = self.find_train_number_in_any_block(ocr_results)
         if not num:
             num = self.extract_valid_combination(ocr_results)
         if not num:
             num = self.try_direct_patterns(ocr_results)
+        # Если по grayscale ничего не нашли — одна попытка по бинаризации (на случай тёмного фона)
+        if not num:
+            processed = self.preprocess_enhanced(image)
+            ocr_results2 = self.reader.readtext(processed)
+            num = self.find_train_number_in_any_block(ocr_results2)
+            if not num:
+                num = self.extract_valid_combination(ocr_results2)
+            if not num:
+                num = self.try_direct_patterns(ocr_results2)
         return num
 
     # ---------------- Управление файлами debug_cams ---------------- #

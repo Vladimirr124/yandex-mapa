@@ -188,7 +188,7 @@
       </div>
       <p style="font-size: 11px; color: #666; margin: 0;">Сервер: <code>python gpu+out/serve_last_screenshot.py</code> — порт 8766</p>
 
-      <p style="font-size: 11px; color: #666; margin: 8px 0 0;">При распознавании (camall_screen_capture.py) поезд появляется на карте при входе и удаляется при выходе из депо (WebSocket порт 8765).</p>
+      <p style="font-size: 11px; color: #666; margin: 8px 0 0;">При распознавании (camall_screen_capture.py) поезд появляется на карте при входе и удаляется при выходе из депо (WebSocket порт 8765). Если открыли карту по ссылке (не localhost), в URL добавьте <code>ws_url=wss://ваш-ngrok-8765</code>.</p>
       <div class="log" id="log"></div>
     </div>
   </div>
@@ -246,6 +246,9 @@
         if (wsUrl) mapWsUrl = wsUrl;
         var onLocalhost = /^(localhost|127\.0\.0\.1)$/i.test(location.hostname);
         shouldUseMapWs = onLocalhost || !!params.get('ws_url');
+        if (params.get('screenshot_url') && !shouldUseMapWs) {
+          console.warn('Карта открыта по ссылке (не localhost) без ws_url — поезд с распознавания не появится. Добавьте в URL: &ws_url=wss://ВАШ_NGROK_ДЛЯ_ПОРТА_8765');
+        }
         var img = document.getElementById('last-recognition-img');
         if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
       })();
