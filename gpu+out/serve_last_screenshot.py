@@ -58,7 +58,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                chunk = 65536
+                for i in range(0, len(data), chunk):
+                    self.wfile.write(data[i : i + chunk])
+            except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError, OSError):
+                pass  # клиент закрыл соединение (таймаут, отмена) — не падаем
         else:
             self.send_response(404)
             self.end_headers()

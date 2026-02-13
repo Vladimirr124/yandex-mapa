@@ -250,8 +250,8 @@
         if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
       })();
 
-      /** Загружает скриншот в img. Для ngrok использует fetch с заголовком, чтобы обойти страницу "Visit Site". */
-      function loadScreenshot(img, url, errEl) {
+      /** Загружает скриншот в img. Для ngrok использует fetch с заголовком. cb(didSucceed) — опционально, по завершении. */
+      function loadScreenshot(img, url, errEl, cb) {
         if (!img) return;
         var el = errEl || document.getElementById('last-recognition-error');
         var isNgrok = /ngrok-free\.app|ngrok\.io/i.test(url);
@@ -266,6 +266,7 @@
               lastScreenshotBlobUrlForBalloon = img._screenshotBlobUrl;
               if (el) el.style.display = 'none';
               img.style.display = 'block';
+              if (cb) cb(true);
             })
             .catch(function (e) {
               if (el) {
@@ -275,9 +276,11 @@
                 else el.textContent = 'Не загрузилось (CORS или сеть). Убедитесь, что ngrok запущен с политикой: --traffic-policy-file=gpu+out/ngrok-cors-policy.yml';
               }
               img.style.display = 'none';
+              if (cb) cb(false);
             });
         } else {
           img.src = url;
+          if (cb) cb(true);
         }
       }
 
@@ -558,10 +561,24 @@
             img.onerror = function () { errEl.style.display = 'block'; img.style.display = 'none'; };
           }
         })();
-        setInterval(function () {
+        (function scheduleScreenshotRefresh(runSoon) {
           var img = document.getElementById('last-recognition-img');
-          if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
-        }, 5000);
+          if (!img) return;
+          var isNgrok = /ngrok-free\.app|ngrok\.io/i.test(LAST_SCREENSHOT_URL);
+          var delayOk = isNgrok ? 20000 : 5000;
+          var delayFail = isNgrok ? 45000 : 10000;
+          function next() {
+            if (document.visibilityState !== 'visible') {
+              setTimeout(function () { scheduleScreenshotRefresh(true); }, 5000);
+              return;
+            }
+            loadScreenshot(img, LAST_SCREENSHOT_URL, null, function (ok) {
+              setTimeout(function () { scheduleScreenshotRefresh(true); }, ok ? delayOk : delayFail);
+            });
+          }
+          var firstDelay = runSoon ? 0 : (isNgrok ? 15000 : 5000);
+          setTimeout(next, firstDelay);
+        })();
 
         document.getElementById('btn-add-track').addEventListener('click', addTrackLine);
         document.getElementById('btn-copy-tracks').addEventListener('click', copyTracksData);
