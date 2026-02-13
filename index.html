@@ -241,8 +241,33 @@
         }
         if (wsUrl) mapWsUrl = wsUrl;
         var img = document.getElementById('last-recognition-img');
-        if (img) img.src = LAST_SCREENSHOT_URL;
+        if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
       })();
+
+      /** Загружает скриншот в img. Для ngrok использует fetch с заголовком, чтобы обойти страницу "Visit Site". */
+      function loadScreenshot(img, url, errEl) {
+        if (!img) return;
+        var el = errEl || document.getElementById('last-recognition-error');
+        var isNgrok = /ngrok-free\.app|ngrok\.io/i.test(url);
+        if (isNgrok) {
+          var opts = { headers: { 'ngrok-skip-browser-warning': 'true' } };
+          fetch(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), opts)
+            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
+            .then(function (blob) {
+              if (img._screenshotBlobUrl) URL.revokeObjectURL(img._screenshotBlobUrl);
+              img._screenshotBlobUrl = URL.createObjectURL(blob);
+              img.src = img._screenshotBlobUrl;
+              if (el) el.style.display = 'none';
+              img.style.display = 'block';
+            })
+            .catch(function () {
+              if (el) el.style.display = 'block';
+              img.style.display = 'none';
+            });
+        } else {
+          img.src = url;
+        }
+      }
 
       /** Размер оси‑алigned прямоугольника в пикселях (картинка «как есть», без поворота геометрии) */
       function getAxisAlignedPixelSize(lat, lon, widthM, heightM) {
@@ -516,7 +541,7 @@
         })();
         setInterval(function () {
           var img = document.getElementById('last-recognition-img');
-          if (img && img.src) img.src = LAST_SCREENSHOT_URL + '?t=' + Date.now();
+          if (img) loadScreenshot(img, LAST_SCREENSHOT_URL);
         }, 5000);
 
         document.getElementById('btn-add-track').addEventListener('click', addTrackLine);
