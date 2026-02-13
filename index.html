@@ -183,7 +183,7 @@
 
       <h2>Последний скриншот (распознавание)</h2>
       <div class="coords-box last-screenshot-box">
-        <img id="last-recognition-img" src="http://localhost:8766/last.jpg" alt="Последний скриншот" style="max-width:100%; height:auto; border-radius:4px; display:block;" />
+        <img id="last-recognition-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Последний скриншот" style="max-width:100%; height:auto; border-radius:4px; display:block;" />
         <p id="last-recognition-error" style="display:none; color:#c00; font-size:12px; margin:8px 0 0 0;">Не загрузилось. Откройте страницу по http:// (не file://) и запустите сервер скриншотов.</p>
       </div>
       <p style="font-size: 11px; color: #666; margin: 0;">Сервер: <code>python gpu+out/serve_last_screenshot.py</code> — порт 8766</p>
@@ -260,8 +260,11 @@
               if (el) el.style.display = 'none';
               img.style.display = 'block';
             })
-            .catch(function () {
-              if (el) el.style.display = 'block';
+            .catch(function (e) {
+              if (el) {
+                el.style.display = 'block';
+                el.textContent = 'Не загрузилось (проверьте CORS: сервер serve_last_screenshot.py должен отвечать на OPTIONS с заголовком Access-Control-Allow-Origin; ngrok должен пересылать OPTIONS на локальный сервер).';
+              }
               img.style.display = 'none';
             });
         } else {

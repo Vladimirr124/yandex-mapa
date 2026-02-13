@@ -30,6 +30,15 @@ def get_latest_jpg():
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        """CORS preflight: нужен, когда карта с GitHub Pages делает fetch() с заголовком ngrok-skip-browser-warning."""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "ngrok-skip-browser-warning")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     def do_GET(self):
         if self.path.split("?")[0] == "/last.jpg":
             path = get_latest_jpg()

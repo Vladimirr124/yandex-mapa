@@ -33,6 +33,8 @@
   `?ws_url=wss://твой-сервер.com`  
   — если поднимешь WebSocket для распознавания на том же сервере.
 
+**CORS при использовании ngrok:** карта с GitHub Pages делает запрос к твоему ngrok-URL с заголовком `ngrok-skip-browser-warning`, из‑за чего браузер отправляет preflight (OPTIONS). Сервер `serve_last_screenshot.py` отвечает на OPTIONS с заголовками CORS (`Access-Control-Allow-Origin: *` и др.). Убедись, что запущен именно этот скрипт и что ngrok пересылает запросы (в т.ч. OPTIONS) на порт 8766. Проверка: `curl -X OPTIONS -i https://твой-ngrok-URL/last.jpg` — в ответе должны быть заголовки `Access-Control-Allow-Origin`.
+
 ## Поезда видны всем по ссылке (Firebase)
 
 Чтобы добавленные прямоугольники (поезда) сохранялись и отображались у **всех**, кто открыл карту по ссылке:
